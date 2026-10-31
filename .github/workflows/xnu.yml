@@ -80,7 +80,6 @@ jobs:
       - name: Build
         working-directory: dxb
         env:
-  PATCH_REPO: https://github.com/940119/ios16_on_polaris_mix2s
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
         run: bash build.sh
