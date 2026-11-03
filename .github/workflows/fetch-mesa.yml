@@ -34,16 +34,45 @@ jobs:
           echo "every source failed" >&2
           exit 1
 
+      - name: Configure (only to generate the register headers)
+        run: |
+          set +e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkg-config bison flex \
+            python3-mako python3-yaml python3-setuptools python3-pip libdrm-dev \
+            zlib1g-dev libx11-dev libxext-dev libxrandr-dev libxcb1-dev \
+            libxshmfence-dev libwayland-dev libwayland-egl-backend-dev \
+            libzstd-dev libexpat1-dev libelf-dev >/dev/null
+          python3 -m pip install --quiet --upgrade --break-system-packages meson mako pyyaml
+          export PATH="$HOME/.local/bin:$PATH"
+          cd mesa
+          meson setup build -Dbuild-tests=false \
+            -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dllvm=disabled \
+            > ../configure.log 2>&1
+          echo "configure_exit=$?" >> ../configure.log
+          tail -5 ../configure.log
+          ninja -C build src/freedreno/registers/adreno/a6xx.xml.h \
+                          src/freedreno/registers/adreno/a6xx_enums.xml.h \
+                          src/freedreno/registers/adreno/adreno_common.xml.h \
+                          src/freedreno/registers/adreno/adreno_pm4.xml.h \
+            >> ../configure.log 2>&1
+          echo "headers_exit=$?" >> ../configure.log
+          tail -5 ../configure.log
+
       - name: Pack what is needed to read
         run: |
           mkdir -p out
           git -C mesa rev-parse HEAD > out/mesa-commit.txt
-          git -C mesa log -1 --format=%cd >> out/mesa-commit.txt
           for p in src/freedreno src/gallium/drivers/freedreno src/compiler/nir docs; do
             if [ -e "mesa/$p" ]; then
               tar -czf "out/$(echo "$p" | tr '/' '-').tgz" -C mesa "$p"
             fi
           done
+          # The generated register headers are what says how a builder macro is
+          # actually spelled; they only exist after configure.
+          tar -czf out/generated-registers.tgz -C mesa/build/src/freedreno/registers . 2>/dev/null
+          cp configure.log out/ 2>/dev/null
           ls -l out
 
       - uses: actions/upload-artifact@v4
