@@ -1,0 +1,205 @@
+name: ir3-regs
+
+# Print the a6xx context registers computerator would program for one shader.
+#
+# The kernel driver has to write the same values, and deriving them by hand from
+# a6xx.xml is where a port like this goes wrong: every field would be a shift and
+# a mask typed from memory. So the numbers are produced here, by the same macros
+# FreeDesktop uses, and the kernel side just copies them.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Mesa branch or tag
+        default: main
+
+env:
+  SHADER: |
+    @localsize 8, 1, 1
+    @buf 8
+    @invocationid(r0.x)
+    mov.u32u32 r1.x, 0x0209c0de
+    (rpt5)nop
+    stib.b.untyped.1d.u32.1.imm r1.x, r0.x, 0
+    end
+    nop
+
+jobs:
+  regs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkg-config bison flex \
+            python3-mako python3-yaml python3-setuptools python3-pip \
+            libdrm-dev zlib1g-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcb1-dev libxshmfence-dev libwayland-dev libwayland-egl-backend-dev \
+            libzstd-dev libexpat1-dev libelf-dev >/dev/null
+          python3 -m pip install --quiet --upgrade --break-system-packages meson mako pyyaml
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch Mesa
+        run: |
+          for url in \
+              https://gitlab.freedesktop.org/mesa/mesa.git \
+              https://android.googlesource.com/platform/external/mesa3d ; do
+            rm -rf mesa
+            if git clone -q --depth 1 --branch "${{ inputs.ref }}" "$url" mesa; then exit 0; fi
+          done
+          exit 1
+
+      - name: Add the register dumper
+        run: |
+          cat > mesa/src/freedreno/ir3/tests/regs_dump.cpp <<'EOF'
+          /* Print the a6xx CS context registers for one assembled shader.
+           *
+           * This is computerator's cs_program_emit_regs() with the ringbuffer
+           * taken out: same macros, same arguments, printed instead of poked.
+           */
+          #include <stdio.h>
+          #include "ir3/ir3_compiler.h"
+          #include "ir3/ir3_shader.h"
+          #include "ir3/ir3_assembler.h"
+          #include "common/freedreno_dev_info.h"
+          #include "common/fd6_hw.h"
+          #include "util/u_math.h"
+
+          static void p1(const char *n, struct fd_reg_pair r) {
+             printf("REG %-26s 0x%05x 0x%08x\n", n, r.reg, r.value);
+          }
+          static void p2(const char *n, struct fd_reg_pair lo, struct fd_reg_pair hi) {
+             printf("REG %-26s 0x%05x 0x%08x\n", n, lo.reg, lo.value);
+             printf("REG %-26s 0x%05x 0x%08x\n", n, hi.reg, hi.value);
+          }
+
+          int main(int argc, char **argv)
+          {
+             struct ir3_compiler_options opts = { .disable_cache = true };
+             struct fd_dev_id id = { .gpu_id = 630 };
+             const struct fd_dev_info *info = fd_dev_info_raw(&id);
+             struct ir3_kernel_info kinfo = { 0 };
+             struct ir3_compiler *c;
+             struct ir3_shader *s;
+             struct ir3_shader_variant *v;
+             const chip CHIP = A6XX;
+             unsigned shader_iova = 0x10c20000, uav_iova = 0x10c21000;
+
+             if (!info) { fprintf(stderr, "no a630 info\n"); return 1; }
+             c = ir3_compiler_create(NULL, &id, info, &opts);
+             if (!c) { fprintf(stderr, "no compiler\n"); return 1; }
+             s = ir3_parse_asm(c, &kinfo, stdin);
+             if (!s) { fprintf(stderr, "assembly failed\n"); return 1; }
+             v = s->variants;
+
+             printf("# instrlen %u constlen %u num_samp %u shared_size %u earlypreamble %u "
+                    "mergedregs %u pvtmem %u bufs %u\n",
+                    v->instrlen, v->constlen, v->num_samp, v->shared_size,
+                    v->early_preamble, v->mergedregs, v->pvtmem_size, kinfo.num_bufs);
+             printf("# info max_reg %u max_half_reg %u double_threadsize %u\n",
+                    v->info.max_reg, v->info.max_half_reg, v->info.double_threadsize);
+
+             enum a6xx_threadsize thrsz = v->info.double_threadsize ? THREAD128 : THREAD64;
+
+             p1("SP_PERFCTR_SHADER_MASK", A6XX_SP_PERFCTR_SHADER_MASK(.cs = true));
+             p1("SP_NC_MODE_CNTL_2", A6XX_SP_NC_MODE_CNTL_2());
+             for (unsigned i = 0; i < 16; i++) {
+                if (!info->magic_raw[i].reg) break;
+                printf("REG %-26s 0x%05x 0x%08x\n", "magic_raw", info->magic_raw[i].reg,
+                       info->magic_raw[i].value);
+             }
+
+             p1("SP_MODE_CNTL", A6XX_SP_MODE_CNTL(
+                .constant_demotion_enable = true,
+                .isammode = ISAMMODE_GL,
+                .shared_consts_enable = false));
+             p1("SP_UPDATE_CNTL", SP_UPDATE_CNTL(CHIP,
+                .vs_state = true, .hs_state = true, .ds_state = true, .gs_state = true,
+                .fs_state = true, .cs_state = true, .gfx_uav = true));
+             p1("SP_CS_CONST_CONFIG", SP_CS_CONST_CONFIG(CHIP,
+                .constlen = align(v->constlen, 4), .enabled = true));
+             p1("SP_CS_CONFIG", A6XX_SP_CS_CONFIG(
+                .enabled = true, .ntex = v->num_samp, .nsamp = v->num_samp,
+                .nuav = kinfo.num_bufs));
+             p1("SP_CS_INSTR_SIZE", A6XX_SP_CS_INSTR_SIZE(v->instrlen));
+             p1("SP_CS_CNTL_0", A6XX_SP_CS_CNTL_0(
+                .halfregfootprint = v->info.max_half_reg + 1,
+                .fullregfootprint = v->info.max_reg + 1,
+                .branchstack = ir3_shader_branchstack_hw(v),
+                .threadsize = thrsz,
+                .earlypreamble = v->early_preamble,
+                .mergedregs = v->mergedregs));
+
+             {
+                uint32_t shared_size = MAX2(((int)v->shared_size - 1) / 1024, 1);
+                enum a6xx_const_ram_mode mode =
+                   v->constlen > 256 ? CONSTLEN_512 :
+                   (v->constlen > 192 ? CONSTLEN_256 :
+                   (v->constlen > 128 ? CONSTLEN_192 : CONSTLEN_128));
+                p1("SP_CS_CNTL_1", A6XX_SP_CS_CNTL_1(.shared_size = shared_size,
+                                                    .constantrammode = mode));
+             }
+             {
+                uint32_t liid = ir3_find_sysval_regid(v, SYSTEM_VALUE_LOCAL_INVOCATION_ID);
+                uint32_t wgid = ir3_find_sysval_regid(v, SYSTEM_VALUE_WORKGROUP_ID);
+                p1("SP_CS_CONST_CONFIG_0", SP_CS_CONST_CONFIG_0(CHIP,
+                   .wgidconstid = wgid, .wgsizeconstid = INVALID_REG,
+                   .wgoffsetconstid = INVALID_REG, .localidregid = liid));
+                p1("SP_CS_WGE_CNTL", SP_CS_WGE_CNTL(CHIP,
+                   .linearlocalidregid = INVALID_REG, .threadsize = thrsz));
+             }
+             p2("SP_CS_BASE", A6XX_SP_CS_BASE(shader_iova));
+             p1("SP_CS_INSTR_SIZE2", A6XX_SP_CS_INSTR_SIZE(v->instrlen));
+             p2("SP_CS_UAV_BASE", SP_CS_UAV_BASE(CHIP, uav_iova));
+             p1("SP_CS_USIZE", A6XX_SP_CS_USIZE(kinfo.num_bufs));
+             return 0;
+          }
+          EOF
+          cat >> mesa/src/freedreno/ir3/meson.build <<'EOF'
+
+          test('ir3_regs_dump',
+            executable(
+              'ir3_regs_dump',
+              'tests/regs_dump.cpp',
+              link_args : [ld_args_build_id],
+              link_with: [libfreedreno_ir3],
+              dependencies: [idep_libir3decode, idep_mesautil, idep_nir],
+              include_directories: [inc_freedreno, inc_include, inc_src],
+            ),
+            suite: ['freedreno'],
+          )
+          EOF
+
+      - name: Configure
+        run: |
+          mkdir -p out
+          cd mesa
+          set +e
+          meson setup build \
+            -Dbuild-tests=true \
+            -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dllvm=disabled \
+            > ../out/configure.log 2>&1
+          tail -20 ../out/configure.log
+
+      - name: Build and run
+        run: |
+          set +e
+          mkdir -p out
+          ( cd mesa && ninja build/src/freedreno/ir3/ir3_regs_dump ) > out/build.log 2>&1
+          echo "build_exit=$?" >> out/build.log
+          tail -40 out/build.log
+          printf '%s\n' "$SHADER" > out/shader.asm
+          TOOL=mesa/build/src/freedreno/ir3/ir3_regs_dump
+          ${TOOL} < out/shader.asm > out/regs.txt 2>&1
+          echo "run_exit=$?" >> out/regs.txt
+          cat out/regs.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ir3-regs
+          path: out/*
+          retention-days: 14
