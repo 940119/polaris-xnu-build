@@ -133,17 +133,21 @@ jobs:
       - name: Build the one executable
         run: |
           mkdir -p out
-          cd mesa
           set -o pipefail
-          # note: piping ninja through tail would report tail's status, which is
-          # how the first attempt "built" successfully and then had no binary.
-          if ninja -C build src/freedreno/ir3/ir3_asm_dump > ../out/build.log 2>&1; then
-            echo BUILD_OK | tee -a ../out/build.log
+          echo "--- tail of the ir3 meson.build as meson saw it" > out/build.log
+          tail -14 mesa/src/freedreno/ir3/meson.build >> out/build.log
+          echo "--- targets mentioning ir3" >> out/build.log
+          ninja -C mesa/build -t targets all 2>&1 | grep -i "ir3" | head -30 >> out/build.log
+          echo "--- compile" >> out/build.log
+          # note: piping ninja through tail reports tail's status, which is how
+          # the first attempt "built" successfully and then had no binary.
+          if meson compile -C mesa/build ir3_asm_dump >> out/build.log 2>&1; then
+            echo BUILD_OK | tee -a out/build.log
           else
-            echo BUILD_FAILED | tee -a ../out/build.log
+            echo BUILD_FAILED | tee -a out/build.log
           fi
-          tail -60 ../out/build.log
-          find build -name 'ir3_asm_dump*' -type f -print | tee -a ../out/build.log
+          tail -50 out/build.log
+          find mesa/build -name 'ir3_asm_dump*' -type f -print | tee -a out/build.log
 
       - name: Assemble
         run: |
