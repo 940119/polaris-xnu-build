@@ -67,20 +67,27 @@ jobs:
           #include "ir3/ir3_assembler.h"
           #include "common/freedreno_dev_info.h"
           #include "common/fd6_hw.h"
-          /* fd6_pack.h would bring the whole ringbuffer in for one two-field
-           * struct, so the struct is declared here and only the generated
-           * builders are included.
+          /* fd6_pack.h would bring the whole ringbuffer in for one struct, so
+           * the struct is copied here field for field. The bo-based builders
+           * still have to compile, which is why the bo members are here at all;
+           * none of them is called.
            */
-          struct fd_reg_pair { uint32_t reg; uint32_t value; };
+          struct fd_bo;
+          #define __bo_type struct fd_bo *
+          struct fd_reg_pair {
+             uint32_t reg;
+             uint64_t value;
+             struct fd_bo *bo;
+             bool is_address;
+             uint32_t bo_offset;
+             uint32_t bo_shift;
+             uint32_t bo_low;
+          };
           #include "a6xx-pack.xml.h"
           #include "util/u_math.h"
 
           static void p1(const char *n, struct fd_reg_pair r) {
-             printf("REG %-26s 0x%05x 0x%08x\n", n, r.reg, r.value);
-          }
-          static void p2(const char *n, struct fd_reg_pair lo, struct fd_reg_pair hi) {
-             printf("REG %-26s 0x%05x 0x%08x\n", n, lo.reg, lo.value);
-             printf("REG %-26s 0x%05x 0x%08x\n", n, hi.reg, hi.value);
+             printf("REG %-26s 0x%05x 0x%08x\n", n, r.reg, (uint32_t)r.value);
           }
 
           int main(int argc, char **argv)
@@ -158,9 +165,12 @@ jobs:
                 p1("SP_CS_WGE_CNTL", SP_CS_WGE_CNTL(CHIP,
                    .linearlocalidregid = INVALID_REG, .threadsize = thrsz));
              }
-             p2("SP_CS_BASE", A6XX_SP_CS_BASE(shader_iova));
              p1("SP_CS_INSTR_SIZE2", A6XX_SP_CS_INSTR_SIZE(v->instrlen));
-             p2("SP_CS_UAV_BASE", SP_CS_UAV_BASE(CHIP, uav_iova));
+             /* The two address registers are bo-based builders, so only their
+              * offsets are printed; lo/hi are the address split in half and are
+              * assembled on the kernel side. */
+             printf("# SP_CS_BASE offset 0x%05x, SP_CS_UAV_BASE offset 0x%05x\n",
+                    (unsigned)REG_A6XX_SP_CS_BASE, (unsigned)REG_A6XX_SP_CS_UAV_BASE);
              p1("SP_CS_USIZE", A6XX_SP_CS_USIZE(kinfo.num_bufs));
              return 0;
           }
