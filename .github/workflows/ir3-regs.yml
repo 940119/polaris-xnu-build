@@ -60,16 +60,18 @@ jobs:
            * taken out: same macros, same arguments, printed instead of poked.
            */
           #include <stdio.h>
+          #include <stdint.h>
+          #include <stdbool.h>
           #include "ir3/ir3_compiler.h"
           #include "ir3/ir3_shader.h"
           #include "ir3/ir3_assembler.h"
           #include "common/freedreno_dev_info.h"
-          #include "common/fd6_pack.h"
           #include "common/fd6_hw.h"
-          /* The A6XX_XXX(.field = value) builders are not in a6xx.xml.h: that
-           * one is generated with c-defines. They come from the c-pack-structs
-           * output, which is a different file with a different name.
+          /* fd6_pack.h would bring the whole ringbuffer in for one two-field
+           * struct, so the struct is declared here and only the generated
+           * builders are included.
            */
+          struct fd_reg_pair { uint32_t reg; uint32_t value; };
           #include "a6xx-pack.xml.h"
           #include "util/u_math.h"
 
