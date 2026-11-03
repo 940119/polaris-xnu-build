@@ -188,7 +188,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          ( cd mesa && ninja build/src/freedreno/ir3/ir3_regs_dump ) > out/build.log 2>&1
+          ( ninja -C mesa/build src/freedreno/ir3/ir3_regs_dump ) > out/build.log 2>&1
           echo "build_exit=$?" >> out/build.log
           tail -40 out/build.log
           printf '%s\n' "$SHADER" > out/shader.asm
