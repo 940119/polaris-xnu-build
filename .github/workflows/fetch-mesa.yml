@@ -39,7 +39,7 @@ jobs:
           mkdir -p out
           git -C mesa rev-parse HEAD > out/mesa-commit.txt
           git -C mesa log -1 --format=%cd >> out/mesa-commit.txt
-          for p in src/freedreno src/compiler/nir docs; do
+          for p in src/freedreno src/gallium/drivers/freedreno src/compiler/nir docs; do
             if [ -e "mesa/$p" ]; then
               tar -czf "out/$(echo "$p" | tr '/' '-').tgz" -C mesa "$p"
             fi
