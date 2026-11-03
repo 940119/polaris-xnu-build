@@ -1,0 +1,48 @@
+name: mesa-peek
+
+# Not a build either. gitlab.freedesktop.org answers a web fetch with a
+# proof-of-work wall and the GitHub mirror only has a stub, so the only way to
+# read fd6_launch_grid is to clone from a runner and print it into the log.
+on:
+  workflow_dispatch:
+
+jobs:
+  peek:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Clone
+        run: |
+          for url in \
+              https://gitlab.freedesktop.org/mesa/mesa.git \
+              https://android.googlesource.com/platform/external/mesa3d ; do
+            rm -rf mesa
+            if git clone -q --depth 1 "$url" mesa; then
+              echo "CLONED $url"; git -C mesa rev-parse HEAD; exit 0
+            fi
+            echo "no luck with $url"
+          done
+          exit 1
+
+      - name: fd6_launch_grid
+        run: |
+          f=$(grep -rl '^fd6_launch_grid' mesa/src 2>/dev/null | head -1)
+          [ -z "$f" ] && f=$(grep -rl 'fd6_launch_grid(struct' mesa/src | head -1)
+          echo "FILE=$f"
+          echo "-----BEGIN launch_grid-----"
+          awk '/^fd6_launch_grid\(/{p=1} p{print} p&&/^}/{exit}' "$f"
+          echo "-----END launch_grid-----"
+
+      - name: computerator
+        run: |
+          f=$(grep -rl 'cs_program_emit_regs' mesa/src | head -1)
+          echo "FILE=$f"
+          echo "-----BEGIN computerator-----"
+          cat "$f"
+          echo "-----END computerator-----"
+
+      - name: how a dispatch is fed
+        run: |
+          echo "-----BEGIN fd6_dispatch-----"
+          grep -rn 'CP_EXEC_CS\|SP_CS_NDRANGE\|SET_MARKER(\|RM6_COMPUTE\|SP_CS_CNTL' mesa/src | head -80
+          echo "-----END fd6_dispatch-----"
