@@ -121,29 +121,40 @@ jobs:
 
       - name: Build the one executable
         run: |
+          mkdir -p out
           cd mesa
-          ninja -C build src/freedreno/ir3/ir3_asm_dump 2>&1 | tail -40
+          set -o pipefail
+          # note: piping ninja through tail would report tail's status, which is
+          # how the first attempt "built" successfully and then had no binary.
+          if ninja -C build src/freedreno/ir3/ir3_asm_dump > ../out/build.log 2>&1; then
+            echo BUILD_OK | tee -a ../out/build.log
+          else
+            echo BUILD_FAILED | tee -a ../out/build.log
+          fi
+          tail -60 ../out/build.log
+          find build -name 'ir3_asm_dump*' -type f -print | tee -a ../out/build.log
 
       - name: Assemble
         run: |
           mkdir -p out
+          TOOL="$(find mesa/build -name ir3_asm_dump -type f | head -1)"
+          echo "tool: ${TOOL:-none}"
           # (1) a shader copied verbatim from Mesa's own examples: if this one
           #     fails too, the tool or the API is wrong, not the syntax.
           cp mesa/src/freedreno/computerator/examples/buf-init.asm out/ex1-buf-init.asm
           # (2) ours: one constant into the invocation's slot of the buffer.
           printf '%s\n' "$SHADER" > out/ex2-store.asm
           for f in out/ex1-buf-init.asm out/ex2-store.asm; do
+            b="$(basename "$f" .asm)"
             echo "==== $f"
             cat "$f"
-            if ./mesa/build/src/freedreno/ir3/ir3_asm_dump "out/$(basename "$f" .asm).bin" \
-                 < "$f" > "out/$(basename "$f" .asm).log" 2>&1; then
-              echo "OK" >> "out/$(basename "$f" .asm).log"
-              xxd "out/$(basename "$f" .asm).bin" | head -20 \
-                >> "out/$(basename "$f" .asm).log"
+            if [ -n "$TOOL" ] && "$TOOL" "out/$b.bin" < "$f" > "out/$b.log" 2>&1; then
+              echo "OK" >> "out/$b.log"
+              xxd "out/$b.bin" | head -24 >> "out/$b.log"
             else
-              echo "FAILED" >> "out/$(basename "$f" .asm).log"
+              echo "FAILED (tool=${TOOL:-none})" >> "out/$b.log"
             fi
-            cat "out/$(basename "$f" .asm).log"
+            cat "out/$b.log"
           done
           ls -l out
 
