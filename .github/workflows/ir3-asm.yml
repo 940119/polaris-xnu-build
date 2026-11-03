@@ -127,12 +127,25 @@ jobs:
       - name: Assemble
         run: |
           mkdir -p out
-          printf '%s\n' "$SHADER" > shader.asm
-          cat shader.asm
-          ./mesa/build/src/freedreno/ir3/ir3_asm_dump out/shader.bin < shader.asm
-          ls -l out/shader.bin
-          xxd out/shader.bin | head -20 > out/shader.hex
-          cat out/shader.hex
+          # (1) a shader copied verbatim from Mesa's own examples: if this one
+          #     fails too, the tool or the API is wrong, not the syntax.
+          cp mesa/src/freedreno/computerator/examples/buf-init.asm out/ex1-buf-init.asm
+          # (2) ours: one constant into the invocation's slot of the buffer.
+          printf '%s\n' "$SHADER" > out/ex2-store.asm
+          for f in out/ex1-buf-init.asm out/ex2-store.asm; do
+            echo "==== $f"
+            cat "$f"
+            if ./mesa/build/src/freedreno/ir3/ir3_asm_dump "out/$(basename "$f" .asm).bin" \
+                 < "$f" > "out/$(basename "$f" .asm).log" 2>&1; then
+              echo "OK" >> "out/$(basename "$f" .asm).log"
+              xxd "out/$(basename "$f" .asm).bin" | head -20 \
+                >> "out/$(basename "$f" .asm).log"
+            else
+              echo "FAILED" >> "out/$(basename "$f" .asm).log"
+            fi
+            cat "out/$(basename "$f" .asm).log"
+          done
+          ls -l out
 
       - uses: actions/upload-artifact@v4
         if: always()
