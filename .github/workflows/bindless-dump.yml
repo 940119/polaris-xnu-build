@@ -1,0 +1,125 @@
+name: bindless-dump
+
+# Print the packed values of the three things 0216/0217 guessed at, using the
+# constructors rather than reading the shift table:
+#
+#   A6XX_SP_CS_BINDLESS_BASE_DESCRIPTOR(set 0, 64-byte, iova 0x10c15000)
+#   A6XX_SP_UPDATE_CNTL(cs_bindless = 0x1f)
+#   CP_LOAD_STATE6_0(ST6_UAV, SS6_BINDLESS, SB6_CS_SHADER, num_unit 1)
+#
+# The constructors live in a6xx-pack.xml.h, which only exists after a configure,
+# so this is the same shape as fdl-desc.yml: configure, generate, then compile one
+# file against the generated headers with no meson wiring at all.
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkg-config bison flex \
+            python3-mako python3-yaml python3-setuptools python3-pip \
+            libdrm-dev zlib1g-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcb1-dev libxshmfence-dev libwayland-dev libwayland-egl-backend-dev \
+            libzstd-dev libexpat1-dev libelf-dev >/dev/null
+          python3 -m pip install --quiet --upgrade --break-system-packages meson mako pyyaml
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch Mesa
+        run: |
+          for url in \
+              https://gitlab.freedesktop.org/mesa/mesa.git \
+              https://android.googlesource.com/platform/external/mesa3d ; do
+            rm -rf mesa
+            if git clone -q --depth 1 "$url" mesa; then exit 0; fi
+          done
+          exit 1
+
+      - name: Configure
+        run: |
+          mkdir -p out
+          cd mesa
+          set +e
+          meson setup build \
+            -Dbuild-tests=false \
+            -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dllvm=disabled \
+            > ../out/configure.log 2>&1
+          echo "configure_exit=$?" >> ../out/configure.log
+          tail -5 ../out/configure.log
+
+      - name: Generate the pack headers
+        run: |
+          set +e
+          mkdir -p out
+          for t in \
+              src/freedreno/registers/adreno/a6xx-pack.xml.h \
+              src/freedreno/registers/adreno/a6xx.xml.h \
+              src/freedreno/registers ; do
+            ( ninja -C mesa/build "$t" ) >> out/gen.log 2>&1
+            echo "target $t -> $?" >> out/gen.log
+          done
+          echo "--- what exists ---" >> out/gen.log
+          find mesa/build -name 'a6xx*pack*.h' -o -name 'a6xx.xml.h' >> out/gen.log 2>&1
+          tail -30 out/gen.log
+
+      - name: Compile and run
+        run: |
+          set +e
+          H=$(find mesa/build -name 'a6xx-pack.xml.h' | head -1)
+          echo "pack header: $H" > out/dump.txt
+          if [ -z "$H" ]; then
+            echo "the pack header was never generated" >> out/dump.txt
+            exit 0
+          fi
+          D=$(dirname "$H")
+          echo "dir: $D" >> out/dump.txt
+          cat > out/dump.cpp <<'EOF'
+          #include <stdio.h>
+          #include <stdint.h>
+
+          #include "a6xx-pack.xml.h"
+
+          int
+          main(void)
+          {
+             uint64_t base = 0x10c15000ull;   /* our descriptor page */
+             uint64_t q = A6XX_SP_CS_BINDLESS_BASE_DESCRIPTOR(base,
+                             .desc_size = BINDLESS_DESCRIPTOR_64B);
+             printf("SP_CS_BINDLESS_BASE_DESCRIPTOR(0x%llx, 64B) = 0x%016llx\n",
+                    (unsigned long long)base, (unsigned long long)q);
+             printf("  lo 0x%08x hi 0x%08x\n", (unsigned)(q & 0xffffffffu),
+                    (unsigned)(q >> 32));
+
+             uint32_t upd = A6XX_SP_UPDATE_CNTL(.cs_bindless = 0x1f);
+             printf("SP_UPDATE_CNTL(cs_bindless=0x1f) = 0x%08x\n", upd);
+
+             uint32_t ld = CP_LOAD_STATE6_0(
+                .dst_off = 0, .state_type = ST6_UAV, .state_src = SS6_BINDLESS,
+                .state_block = SB6_CS_SHADER, .num_unit = 1);
+             printf("CP_LOAD_STATE6_0(uav, bindless, cs, 1) = 0x%08x\n", ld);
+
+             uint32_t lds = CP_LOAD_STATE6_0(
+                .dst_off = 0, .state_type = ST6_SHADER, .state_src = SS6_INDIRECT,
+                .state_block = SB6_CS_SHADER, .num_unit = 1);
+             printf("CP_LOAD_STATE6_0(shader, indirect, cs, 1) = 0x%08x\n", lds);
+             return 0;
+          }
+          EOF
+          g++ -std=c++17 -I "$D" -o out/dump out/dump.cpp >> out/dump.txt 2>&1
+          echo "compile_exit=$?" >> out/dump.txt
+          ./out/dump >> out/dump.txt 2>&1
+          echo "run_exit=$?" >> out/dump.txt
+          cat out/dump.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bindless-dump
+          path: out/*
+          retention-days: 14
