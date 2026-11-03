@@ -112,12 +112,19 @@ jobs:
 
       - name: Configure
         run: |
+          mkdir -p out
           cd mesa
-          meson setup build \
+          set -o pipefail
+          if meson setup build \
             -Dbuild-tests=true \
             -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= \
             -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dllvm=disabled \
-            -Dvideo-codecs= -Dbuild-tools=false 2>&1 | tail -40
+            > ../out/configure.log 2>&1; then
+            echo CONFIGURE_OK | tee -a ../out/configure.log
+          else
+            echo CONFIGURE_FAILED | tee -a ../out/configure.log
+          fi
+          tail -60 ../out/configure.log
 
       - name: Build the one executable
         run: |
