@@ -162,9 +162,9 @@ jobs:
           test('ir3_regs_dump',
             executable(
               'ir3_regs_dump',
-              'tests/regs_dump.cpp',
+              ['tests/regs_dump.cpp', freedreno_xml_header_files],
               link_args : [ld_args_build_id],
-              link_with: [libfreedreno_ir3],
+              link_with: [libfreedreno_ir3, libfreedreno_common],
               dependencies: [idep_libir3decode, idep_mesautil, idep_nir],
               include_directories: [inc_freedreno, inc_include, inc_src],
             ),
