@@ -1,0 +1,53 @@
+name: fetch-mesa
+
+# Not a build. This exists so that the a6xx sources can be read at all: the
+# gitlab.freedesktop.org web front end is behind a proof-of-work wall and the
+# GitHub mirror is gone, so a shallow clone from a runner is the only way to get
+# fd6_emit.c / fd6_program.c / a6xx.xml in front of someone who needs to port
+# their contents into the kernel driver.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Mesa branch or tag to fetch
+        default: main
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Clone the shallowest tree that has the sources
+        run: |
+          set -x
+          for url in \
+              https://gitlab.freedesktop.org/mesa/mesa.git \
+              https://android.googlesource.com/platform/external/mesa3d ; do
+            rm -rf mesa
+            if git clone -q --depth 1 --branch "${{ inputs.ref }}" "$url" mesa; then
+              echo "cloned $url at ${{ inputs.ref }}"
+              git -C mesa rev-parse HEAD
+              exit 0
+            fi
+            echo "no luck with $url"
+          done
+          echo "every source failed" >&2
+          exit 1
+
+      - name: Pack what is needed to read
+        run: |
+          mkdir -p out
+          git -C mesa rev-parse HEAD > out/mesa-commit.txt
+          git -C mesa log -1 --format=%cd >> out/mesa-commit.txt
+          for p in src/freedreno src/compiler/nir docs; do
+            if [ -e "mesa/$p" ]; then
+              tar -czf "out/$(echo "$p" | tr '/' '-').tgz" -C mesa "$p"
+            fi
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesa-source
+          path: out/*
+          retention-days: 7
