@@ -176,6 +176,24 @@ jobs:
                     (unsigned)REG_A6XX_SP_CS_BASE, (unsigned)REG_A6XX_SP_CS_UAV_BASE);
              p1("SP_CS_USIZE", A6XX_SP_CS_USIZE(kinfo.num_bufs));
 
+             /* The grid. Without these the CP launches no waves at all: the
+              * dispatch completes, the fence arrives, and the buffer is never
+              * touched - which is exactly what 0211 and 0212 saw.
+              */
+             p1("SP_CS_NDRANGE_0", SP_CS_NDRANGE_0(CHIP, .kerneldim = 3,
+                .localsizex = 7, .localsizey = 0, .localsizez = 0));
+             p1("SP_CS_NDRANGE_1", SP_CS_NDRANGE_1(CHIP, .globalsize_x = 8));
+             p1("SP_CS_NDRANGE_2", SP_CS_NDRANGE_2(CHIP, 0));
+             p1("SP_CS_NDRANGE_3", SP_CS_NDRANGE_3(CHIP, .globalsize_y = 1));
+             p1("SP_CS_NDRANGE_4", SP_CS_NDRANGE_4(CHIP, 0));
+             p1("SP_CS_NDRANGE_5", SP_CS_NDRANGE_5(CHIP, .globalsize_z = 1));
+             p1("SP_CS_NDRANGE_6", SP_CS_NDRANGE_6(CHIP, 0));
+             p1("SP_CS_KERNEL_GROUP_X", SP_CS_KERNEL_GROUP_X(CHIP, 1));
+             p1("SP_CS_KERNEL_GROUP_Y", SP_CS_KERNEL_GROUP_Y(CHIP, 1));
+             p1("SP_CS_KERNEL_GROUP_Z", SP_CS_KERNEL_GROUP_Z(CHIP, 1));
+             printf("# SET_MARKER %08x\n",
+                    (unsigned)A6XX_CP_SET_MARKER_0(.mode = RM6_COMPUTE).value);
+
              /* The two PM4 payloads, so the kernel side copies numbers rather
               * than shifting fields by hand. */
              {
