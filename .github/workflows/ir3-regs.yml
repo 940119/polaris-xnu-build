@@ -64,7 +64,13 @@ jobs:
           #include "ir3/ir3_shader.h"
           #include "ir3/ir3_assembler.h"
           #include "common/freedreno_dev_info.h"
+          #include "common/fd6_pack.h"
           #include "common/fd6_hw.h"
+          /* The A6XX_XXX(.field = value) builders are not in a6xx.xml.h: that
+           * one is generated with c-defines. They come from the c-pack-structs
+           * output, which is a different file with a different name.
+           */
+          #include "a6xx-pack.xml.h"
           #include "util/u_math.h"
 
           static void p1(const char *n, struct fd_reg_pair r) {
