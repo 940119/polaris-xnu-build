@@ -1,0 +1,137 @@
+name: fdl-desc
+
+# Print the 64-byte SSBO descriptor that Mesa itself would build, instead of
+# deriving it by reading fdl6_buffer_view_init() out loud.
+#
+# The field encoders (A6XX_TEX_MEMOBJ_0_FMT and friends) only exist in the
+# c-pack-structs header, which the fetched register artifact does not carry, so
+# the only way to be sure about descriptor[0] and descriptor[2] is to run the
+# function. Same build shape as ir3-regs.yml: configure Mesa with just freedreno,
+# add one test executable next to libfreedreno_layout, run it.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Mesa branch or tag
+        default: main
+
+jobs:
+  desc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkg-config bison flex \
+            python3-mako python3-yaml python3-setuptools python3-pip \
+            libdrm-dev zlib1g-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcb1-dev libxshmfence-dev libwayland-dev libwayland-egl-backend-dev \
+            libzstd-dev libexpat1-dev libelf-dev >/dev/null
+          python3 -m pip install --quiet --upgrade --break-system-packages meson mako pyyaml
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch Mesa
+        run: |
+          for url in \
+              https://gitlab.freedesktop.org/mesa/mesa.git \
+              https://android.googlesource.com/platform/external/mesa3d ; do
+            rm -rf mesa
+            if git clone -q --depth 1 --branch "${{ inputs.ref }}" "$url" mesa; then exit 0; fi
+          done
+          exit 1
+
+      - name: Add the descriptor dumper
+        run: |
+          cat > mesa/src/freedreno/fdl/desc_dump.cpp <<'EOF'
+          /* The SSBO descriptor for one buffer, exactly as the driver builds it.
+           *
+           * fd6_ssbo_descriptor() in fd6_image.cc is three lines and calls
+           * fdl6_buffer_view_init() with PIPE_FORMAT_R32_UINT, an identity
+           * swizzle, the buffer iova and the size in bytes. This is that call.
+           */
+          #include <stdio.h>
+
+          #include "util/format/u_format.h"
+          #include "fdl/freedreno_layout.h"
+
+          static const uint8_t swiz_identity[4] = {
+             PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W
+          };
+
+          static void
+          dump(const char *what, uint64_t iova, uint32_t bytes)
+          {
+             uint32_t d[16];
+
+             memset(d, 0xcd, sizeof(d));
+             fdl6_buffer_view_init<A6XX>(d, PIPE_FORMAT_R32_UINT, swiz_identity,
+                                         iova, bytes);
+
+             printf("%s: iova %#llx, %u bytes\n", what, (unsigned long long)iova, bytes);
+             for (unsigned i = 0; i < 16; i++)
+                printf("  desc[%2u] = 0x%08x\n", i, d[i]);
+             printf("  as C: ");
+             for (unsigned i = 0; i < 16; i++)
+                printf("%s0x%08xu", i ? ", " : "", d[i]);
+             printf("\n");
+          }
+
+          int
+          main(void)
+          {
+             /* The shape the kernel driver builds: one 32-byte result page. */
+             dump("r32 uint, 8 elements", 0x10c16000ull, 32);
+             /* And the same thing at a different address, to show what moves. */
+             dump("r32 uint, 8 elements again", 0x10c17000ull, 32);
+             return 0;
+          }
+          EOF
+          cat >> mesa/src/freedreno/fdl/meson.build <<'EOF'
+
+          test('fdl_desc_dump',
+            executable(
+              'fdl_desc_dump',
+              ['desc_dump.cpp', freedreno_xml_header_files],
+              link_args : [ld_args_build_id],
+              link_with: [libfreedreno_common, libfreedreno_layout],
+              dependencies: [idep_mesautil],
+              include_directories: [inc_freedreno, inc_include, inc_src],
+            ),
+            suite: ['freedreno'],
+          )
+          EOF
+
+      - name: Configure
+        run: |
+          mkdir -p out
+          cd mesa
+          set +e
+          meson setup build \
+            -Dbuild-tests=true \
+            -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dllvm=disabled \
+            > ../out/configure.log 2>&1
+          echo "configure_exit=$?" >> ../out/configure.log
+          tail -20 ../out/configure.log
+
+      - name: Build and run
+        run: |
+          set +e
+          mkdir -p out
+          ( ninja -C mesa/build src/freedreno/fdl/fdl_desc_dump ) > out/build.log 2>&1
+          echo "build_exit=$?" >> out/build.log
+          tail -40 out/build.log
+          TOOL=$(find mesa/build -name fdl_desc_dump -type f | head -1)
+          echo "TOOL=$TOOL" >> out/desc.txt
+          "$TOOL" >> out/desc.txt 2>&1
+          echo "run_exit=$?" >> out/desc.txt
+          cat out/desc.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fdl-desc
+          path: out/*
+          retention-days: 14
