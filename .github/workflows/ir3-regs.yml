@@ -53,7 +53,7 @@ jobs:
 
       - name: Add the register dumper
         run: |
-          cat > mesa/src/freedreno/ir3/tests/regs_dump.cpp <<'EOF'
+          cat > mesa/src/freedreno/fdl/regs_dump.cpp <<'EOF'
           /* Print the a6xx CS context registers for one assembled shader.
            *
            * This is computerator's cs_program_emit_regs() with the ringbuffer
@@ -202,12 +202,12 @@ jobs:
              return 0;
           }
           EOF
-          cat >> mesa/src/freedreno/ir3/meson.build <<'EOF'
+          cat >> mesa/src/freedreno/fdl/meson.build <<'EOF'
 
           test('ir3_regs_dump',
             executable(
               'ir3_regs_dump',
-              ['tests/regs_dump.cpp', freedreno_xml_header_files],
+              ['regs_dump.cpp', freedreno_xml_header_files],
               link_args : [ld_args_build_id],
               link_with: [libfreedreno_ir3, libfreedreno_common, libfreedreno_layout],
               dependencies: [idep_libir3decode, idep_mesautil, idep_nir],
@@ -233,12 +233,12 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          ( ninja -C mesa/build src/freedreno/ir3/ir3_regs_dump ) > out/build.log 2>&1
+          ( ninja -C mesa/build src/freedreno/fdl/ir3_regs_dump ) > out/build.log 2>&1
           echo "build_exit=$?" >> out/build.log
           tail -40 out/build.log
           printf '%s\n' "$SHADER" > out/shader.asm
-          TOOL=mesa/build/src/freedreno/ir3/ir3_regs_dump
-          ${TOOL} < out/shader.asm > out/regs.txt 2>&1
+          TOOL=$(find mesa/build -name ir3_regs_dump -type f | head -1)
+          "$TOOL" < out/shader.asm > out/regs.txt 2>&1
           echo "run_exit=$?" >> out/regs.txt
           cat out/regs.txt
 
