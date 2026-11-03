@@ -1,0 +1,142 @@
+name: ir3-asm
+
+# Text assembly -> a630 machine code, without building a driver.
+#
+# The 3D track needs ir3 binaries and there is no compiler on the machine that
+# is writing the kernel driver, so the one thing this job has to prove is that
+# Mesa's own assembler can be built and run on a runner: meson configures with
+# no gallium and no vulkan driver, ninja builds one executable out of
+# libfreedreno_ir3, and the shader that comes out is uploaded as bytes.
+#
+# The shader source lives in this file on purpose - it is the thing being
+# iterated on, and a change to it should not need a second repository.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Mesa branch or tag
+        default: main
+
+env:
+  SHADER: |
+    ; 0209c0de into a thread's slot of the buffer, once per invocation.
+    @localsize 8, 1, 1
+    @buf 8
+    @invocationid(r0.x)
+    mov.u32u32 r1.x, 0x0209c0de
+    (rpt5)nop
+    stib.b.untyped.1d.u32.1.imm r1.x, r0.x, 0
+    end
+    nop
+
+jobs:
+  asm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq meson ninja-build pkg-config bison flex \
+            python3-mako python3-yaml python3-setuptools python3-pip \
+            libdrm-dev zlib1g-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcb1-dev libxshmfence-dev libwayland-dev libwayland-egl-backend-dev \
+            libzstd-dev libexpat1-dev libelf-dev >/dev/null
+          python3 -m pip install --quiet mako pyyaml || true
+          meson --version; ninja --version
+
+      - name: Fetch Mesa
+        run: |
+          for url in \
+              https://gitlab.freedesktop.org/mesa/mesa.git \
+              https://android.googlesource.com/platform/external/mesa3d ; do
+            rm -rf mesa
+            if git clone -q --depth 1 --branch "${{ inputs.ref }}" "$url" mesa; then
+              echo "cloned $url"; git -C mesa rev-parse HEAD; exit 0
+            fi
+          done
+          exit 1
+
+      - name: Add a tool that assembles a shader and writes the binary
+        run: |
+          cat > mesa/src/freedreno/ir3/tests/asm_dump.c <<'EOF'
+          /* Assemble one .asm from stdin and write the machine code to argv[1]. */
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include "ir3/ir3_compiler.h"
+          #include "ir3/ir3_shader.h"
+          #include "ir3/ir3_assembler.h"
+          #include "common/freedreno_dev_info.h"
+
+          int main(int argc, char **argv)
+          {
+             struct ir3_compiler_options opts = { .disable_cache = true };
+             struct fd_dev_id id = { .gpu_id = 630 };
+             const struct fd_dev_info *devinfo = fd_dev_info_raw(&id);
+             struct ir3_kernel_info kinfo = { 0 };
+             struct ir3_compiler *c;
+             struct ir3_shader *s;
+             struct ir3_shader_variant *v;
+             FILE *out;
+
+             if (!devinfo) { fprintf(stderr, "no a630 device info\n"); return 1; }
+             c = ir3_compiler_create(NULL, &id, devinfo, &opts);
+             if (!c) { fprintf(stderr, "no compiler\n"); return 1; }
+             s = ir3_parse_asm(c, &kinfo, stdin);
+             if (!s) { fprintf(stderr, "assembly failed\n"); return 1; }
+             v = s->variants;
+             fprintf(stderr, "instrlen %u dwords, bin %u bytes, local %ux%ux%u, bufs %u\n",
+                     v->instrlen, v->info.size, v->local_size[0], v->local_size[1],
+                     v->local_size[2], kinfo.num_bufs);
+             out = fopen(argv[1], "wb");
+             if (!out) { fprintf(stderr, "no output\n"); return 1; }
+             fwrite(v->bin, 1, v->info.size, out);
+             fclose(out);
+             return 0;
+          }
+          EOF
+          cat >> mesa/src/freedreno/ir3/meson.build <<'EOF'
+
+          test('ir3_asm_dump',
+            executable(
+              'ir3_asm_dump',
+              'tests/asm_dump.c',
+              link_args : [ld_args_build_id],
+              link_with: [libfreedreno_ir3],
+              dependencies: [idep_libir3decode, idep_mesautil, idep_nir],
+              include_directories: [inc_freedreno, inc_include, inc_src],
+            ),
+            suite: ['freedreno'],
+          )
+          EOF
+
+      - name: Configure
+        run: |
+          cd mesa
+          meson setup build \
+            -Dbuild-tests=true \
+            -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dllvm=disabled \
+            -Dvideo-codecs= -Dbuild-tools=false 2>&1 | tail -40
+
+      - name: Build the one executable
+        run: |
+          cd mesa
+          ninja -C build src/freedreno/ir3/ir3_asm_dump 2>&1 | tail -40
+
+      - name: Assemble
+        run: |
+          mkdir -p out
+          printf '%s\n' "$SHADER" > shader.asm
+          cat shader.asm
+          ./mesa/build/src/freedreno/ir3/ir3_asm_dump out/shader.bin < shader.asm
+          ls -l out/shader.bin
+          xxd out/shader.bin | head -20 > out/shader.hex
+          cat out/shader.hex
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ir3-asm
+          path: out/*
+          retention-days: 14
