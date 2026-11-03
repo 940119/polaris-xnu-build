@@ -130,47 +130,45 @@ jobs:
           fi
           tail -60 ../out/configure.log
 
-      - name: Build the one executable
+      - name: Build and locate the executable
         run: |
+          set +e            # Actions runs this step with -e; a grep that finds
+                            # nothing would otherwise kill the step silently.
           mkdir -p out
-          set -o pipefail
-          echo "--- tail of the ir3 meson.build as meson saw it" > out/build.log
+          echo "--- meson.build tail" > out/build.log
           tail -14 mesa/src/freedreno/ir3/meson.build >> out/build.log
-          echo "--- targets mentioning ir3" >> out/build.log
-          ninja -C mesa/build -t targets all 2>&1 | grep -i "ir3" | head -30 >> out/build.log
-          echo "--- compile" >> out/build.log
-          # note: piping ninja through tail reports tail's status, which is how
-          # the first attempt "built" successfully and then had no binary.
-          if meson compile -C mesa/build ir3_asm_dump >> out/build.log 2>&1; then
-            echo BUILD_OK | tee -a out/build.log
-          else
-            echo BUILD_FAILED | tee -a out/build.log
-          fi
-          tail -50 out/build.log
-          find mesa/build -name 'ir3_asm_dump*' -type f -print | tee -a out/build.log
+          echo "--- build dir" >> out/build.log
+          ls -l mesa/build 2>&1 | head -8 >> out/build.log
+          echo "--- ninja, all default targets" >> out/build.log
+          ninja -C mesa/build >> out/build.log 2>&1
+          echo "ninja_exit=$?" >> out/build.log
+          tail -25 out/build.log
+          echo "--- where did it land" >> out/build.log
+          find mesa/build -name 'ir3_asm_dump*' -type f >> out/build.log 2>&1
+          find mesa/build -name '*ir3*' -type f -path '*tests*' >> out/build.log 2>&1
+          tail -12 out/build.log
 
       - name: Assemble
         run: |
+          set +e
           mkdir -p out
           TOOL="$(find mesa/build -name ir3_asm_dump -type f | head -1)"
-          echo "tool: ${TOOL:-none}"
-          # (1) a shader copied verbatim from Mesa's own examples: if this one
-          #     fails too, the tool or the API is wrong, not the syntax.
+          echo "tool: ${TOOL:-none}" > out/asm.log
           cp mesa/src/freedreno/computerator/examples/buf-init.asm out/ex1-buf-init.asm
-          # (2) ours: one constant into the invocation's slot of the buffer.
           printf '%s\n' "$SHADER" > out/ex2-store.asm
           for f in out/ex1-buf-init.asm out/ex2-store.asm; do
             b="$(basename "$f" .asm)"
-            echo "==== $f"
-            cat "$f"
-            if [ -n "$TOOL" ] && "$TOOL" "out/$b.bin" < "$f" > "out/$b.log" 2>&1; then
-              echo "OK" >> "out/$b.log"
-              xxd "out/$b.bin" | head -24 >> "out/$b.log"
+            echo "==== $f" >> out/asm.log
+            cat "$f" >> out/asm.log
+            if [ -n "$TOOL" ] && "$TOOL" "out/$b.bin" < "$f" >> "out/asm.log" 2>&1; then
+              echo "OK $b" >> out/asm.log
+              ls -l "out/$b.bin" >> out/asm.log
+              xxd "out/$b.bin" | head -24 >> out/asm.log
             else
-              echo "FAILED (tool=${TOOL:-none})" >> "out/$b.log"
+              echo "FAILED $b" >> out/asm.log
             fi
-            cat "out/$b.log"
           done
+          cat out/asm.log
           ls -l out
 
       - uses: actions/upload-artifact@v4
