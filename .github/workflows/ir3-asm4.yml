@@ -19,44 +19,45 @@ on:
 
 env:
   SHADER: |
-    ; 0237 probe: a store whose address is in a register, no descriptor at all.
+    ; 0237 probe: a global store first, then the SSBO store that has been silent
+    ; for a dozen builds, both writing the same word, two different sentinels.
     ;
-    ; Every build from 0221 to 0232 asked the same question through stib, and
-    ; every one of them answered "no descriptor was read" - the SMMU saw nothing
-    ; even with the descriptor page aimed at a page that has no PTE. 0234 then
-    ; proved the SMMU does report an instruction fetch from an unmapped page, so
-    ; the SP really does start the shader and the silence is real.
+    ; 0221..0232 asked through stib and always heard "no descriptor was read":
+    ; the SMMU stayed quiet even with the descriptor page aimed at a page with no
+    ; PTE, and the result page was never written. 0234 then proved an instruction
+    ; fetch from an unmapped page does fault, so the SP does start the shader and
+    ; that silence is real. Two ways are left: the CS never reaches its later
+    ; instructions, or it reaches them and the UAV path discards the write - and
+    ; a null descriptor being discarded is defined hardware behaviour, so the
+    ; second fits every observation so far.
     ;
-    ; That leaves two possibilities stib cannot tell apart:
-    ;   the CS never executes its later instructions, or
-    ;   the CS executes them and the UAV path discards the write.
-    ; A null descriptor being discarded is defined behaviour on this hardware,
-    ; and the second one fits every observation so far: USIZE 1, SMMU quiet,
-    ; result page untouched, not one descriptor word ever read.
+    ; stg settles it without a fault. Its address is a 64-bit value in a register
+    ; pair, so there is no descriptor to resolve and nothing the hardware may
+    ; legitimately drop. Both stores write word 0 of the result page:
     ;
-    ; stg takes both the descriptor and the UAV state out of the question. The
-    ; address is a 64-bit value in a register pair, so there is nothing for the
-    ; hardware to resolve and nothing it may legitimately discard:
+    ;   stg  -> 0x0badf00d
+    ;   stib -> 0x0209c0de   (the sentinel of the twelve earlier builds)
     ;
-    ;   store 1 -> the result page; the kernel patches its address into the
-    ;              immediate below at boot, finding it by the 0xfeed0001 marker.
-    ;              A store here means the wave executes its stores at all.
-    ;   store 2 -> 0x14bff000, a page with no PTE, so it must raise an SMMU
-    ;              fault. A fault here says the same thing from the other side.
+    ; so the one word the kernel reads back names the answer:
+    ;   0x0209c0de  both stores work, the descriptor path was never broken
+    ;   0x0badf00d  the CS executes, and only the descriptor store fails
+    ;   0           the CS does not reach instruction 7
     ;
-    ; The first store comes first on purpose: a fault kills the wave, so the
-    ; observable one has to happen before the one that must fail.
+    ; Nothing here faults on purpose: a wedged CP costs a boot and a TWRP trip,
+    ; and this question does not need one.
     @localsize 8, 1, 1
+    @buf 8
+    @invocationid(r0.x)
     mov.u32u32 r2.x, 0xfeed0001
     mov.u32u32 r2.y, 0
     mov.u32u32 r1.x, 0x0badf00d
     (rpt5)nop
     stg.a.u32 g[r2.x], r1.x, 1
     nop(sy)
-    mov.u32u32 r2.x, 0x14bff000
-    mov.u32u32 r2.y, 0
+    mov.u32u32 r1.x, 0x0209c0de
+    mov.u32u32 r0.x, 0
     (rpt5)nop
-    stg.a.u32 g[r2.x], r1.x, 1
+    stib.b.untyped.1d.u32.1.imm r1.x, r0.x, 0
     end
     nop
 jobs:
