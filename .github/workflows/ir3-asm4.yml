@@ -52,7 +52,7 @@ env:
     mov.u32u32 r2.y, 0
     mov.u32u32 r1.x, 0x0badf00d
     (rpt5)nop
-    stg.a.u32 g[r2.x], r1.x, 1
+    stg.u32 g[r2.x+0], r1.x, 1
     nop(sy)
     mov.u32u32 r1.x, 0x0209c0de
     mov.u32u32 r0.x, 0
