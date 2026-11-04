@@ -132,6 +132,13 @@ jobs:
         run: |
           mkdir -p out
           cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
+          # kernel.release.sweet.link/ holds the 123 MB static archive and the
+          # dSYM, which together are most of the 54 MB artifact. Nothing here
+          # ever links locally - every build happens in CI - so dropping them
+          # takes the download from half an hour to about a minute.
+          # macOS find has no -maxdepth, so this is a glob rather than a search.
+          rm -rf out/*.link 2>/dev/null || true
+          du -sh out
           ls -la out
           (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
 
