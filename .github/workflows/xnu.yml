@@ -55,6 +55,14 @@ jobs:
           git -C dxb checkout -q FETCH_HEAD
           # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
           cp src/xnu/patches/*.patch src/xnu/patches/*.sh dxb/patches/
+          # bearssl.org has been answering 502, so 0020 prefers a frozen tree over
+          # the clone.  It looks beside itself, i.e. dxb/vendor, so put it there.
+          if [ -d src/xnu/vendor ]; then
+            cp -R src/xnu/vendor dxb/vendor
+            ls -l dxb/vendor
+          else
+            echo "no src/xnu/vendor, 0020 will clone bearssl"
+          fi
           # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
