@@ -1,0 +1,212 @@
+name: ir3-asm4
+
+# Text assembly -> a630 machine code, without building a driver.
+#
+# The 3D track needs ir3 binaries and there is no compiler on the machine that
+# is writing the kernel driver, so the one thing this job has to prove is that
+# Mesa's own assembler can be built and run on a runner: meson configures with
+# no gallium and no vulkan driver, ninja builds one executable out of
+# libfreedreno_ir3, and the shader that comes out is uploaded as bytes.
+#
+# The shader source lives in this file on purpose - it is the thing being
+# iterated on, and a change to it should not need a second repository.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Mesa branch or tag
+        default: main
+
+env:
+  SHADER: |
+    ; 0237 probe: a store whose address is in a register, no descriptor at all.
+    ;
+    ; Every build from 0221 to 0232 asked the same question through stib, and
+    ; every one of them answered "no descriptor was read" - the SMMU saw nothing
+    ; even with the descriptor page aimed at a page that has no PTE. 0234 then
+    ; proved the SMMU does report an instruction fetch from an unmapped page, so
+    ; the SP really does start the shader and the silence is real.
+    ;
+    ; That leaves two possibilities stib cannot tell apart:
+    ;   the CS never executes its later instructions, or
+    ;   the CS executes them and the UAV path discards the write.
+    ; A null descriptor being discarded is defined behaviour on this hardware,
+    ; and the second one fits every observation so far: USIZE 1, SMMU quiet,
+    ; result page untouched, not one descriptor word ever read.
+    ;
+    ; stg takes both the descriptor and the UAV state out of the question. The
+    ; address is a 64-bit value in a register pair, so there is nothing for the
+    ; hardware to resolve and nothing it may legitimately discard:
+    ;
+    ;   store 1 -> the result page; the kernel patches its address into the
+    ;              immediate below at boot, finding it by the 0xfeed0001 marker.
+    ;              A store here means the wave executes its stores at all.
+    ;   store 2 -> 0x14bff000, a page with no PTE, so it must raise an SMMU
+    ;              fault. A fault here says the same thing from the other side.
+    ;
+    ; The first store comes first on purpose: a fault kills the wave, so the
+    ; observable one has to happen before the one that must fail.
+    @localsize 8, 1, 1
+    mov.u32u32 r2.x, 0xfeed0001
+    mov.u32u32 r2.y, 0
+    mov.u32u32 r1.x, 0x0badf00d
+    (rpt5)nop
+    stg.a.u32 g[r2.x], r1.x, 1
+    nop(sy)
+    mov.u32u32 r2.x, 0x14bff000
+    mov.u32u32 r2.y, 0
+    (rpt5)nop
+    stg.a.u32 g[r2.x], r1.x, 1
+    end
+    nop
+jobs:
+  asm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkg-config bison flex \
+            python3-mako python3-yaml python3-setuptools python3-pip \
+            libdrm-dev zlib1g-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcb1-dev libxshmfence-dev libwayland-dev libwayland-egl-backend-dev \
+            libzstd-dev libexpat1-dev libelf-dev >/dev/null
+          # apt's meson is 1.3.2 and Mesa wants >= 1.7.0, so it comes from pip.
+          python3 -m pip install --quiet --upgrade --break-system-packages meson mako pyyaml \
+            || python3 -m pip install --quiet --upgrade --user meson mako pyyaml
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          meson --version; ninja --version
+
+      - name: Fetch Mesa
+        run: |
+          for url in \
+              https://gitlab.freedesktop.org/mesa/mesa.git \
+              https://android.googlesource.com/platform/external/mesa3d ; do
+            rm -rf mesa
+            if git clone -q --depth 1 --branch "${{ inputs.ref }}" "$url" mesa; then
+              echo "cloned $url"; git -C mesa rev-parse HEAD; exit 0
+            fi
+          done
+          exit 1
+
+      - name: Add a tool that assembles a shader and writes the binary
+        run: |
+          cat > mesa/src/freedreno/ir3/tests/asm_dump.c <<'EOF'
+          /* Assemble one .asm from stdin and write the machine code to argv[1]. */
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include "ir3/ir3_compiler.h"
+          #include "ir3/ir3_shader.h"
+          #include "ir3/ir3_assembler.h"
+          #include "common/freedreno_dev_info.h"
+
+          int main(int argc, char **argv)
+          {
+             struct ir3_compiler_options opts = { .disable_cache = true };
+             struct fd_dev_id id = { .gpu_id = 630 };
+             const struct fd_dev_info *devinfo = fd_dev_info_raw(&id);
+             struct ir3_kernel_info kinfo = { 0 };
+             struct ir3_compiler *c;
+             struct ir3_shader *s;
+             struct ir3_shader_variant *v;
+             FILE *out;
+
+             if (!devinfo) { fprintf(stderr, "no a630 device info\n"); return 1; }
+             c = ir3_compiler_create(NULL, &id, devinfo, &opts);
+             if (!c) { fprintf(stderr, "no compiler\n"); return 1; }
+             s = ir3_parse_asm(c, &kinfo, stdin);
+             if (!s) { fprintf(stderr, "assembly failed\n"); return 1; }
+             v = s->variants;
+             fprintf(stderr, "instrlen %u dwords, bin %u bytes, local %ux%ux%u, bufs %u\n",
+                     v->instrlen, v->info.size, v->local_size[0], v->local_size[1],
+                     v->local_size[2], kinfo.num_bufs);
+             fprintf(stderr, "--- disassembly ---\n");
+             ir3_shader_disasm(v, v->bin, stderr);
+             fprintf(stderr, "--- end ---\n");
+             out = fopen(argv[1], "wb");
+             if (!out) { fprintf(stderr, "no output\n"); return 1; }
+             fwrite(v->bin, 1, v->info.size, out);
+             fclose(out);
+             return 0;
+          }
+          EOF
+          cat >> mesa/src/freedreno/ir3/meson.build <<'EOF'
+
+          test('ir3_asm_dump',
+            executable(
+              'ir3_asm_dump',
+              'tests/asm_dump.c',
+              link_args : [ld_args_build_id],
+              link_with: [libfreedreno_ir3],
+              dependencies: [idep_libir3decode, idep_mesautil, idep_nir],
+              include_directories: [inc_freedreno, inc_include, inc_src],
+            ),
+            suite: ['freedreno'],
+          )
+          EOF
+
+      - name: Configure
+        run: |
+          mkdir -p out
+          cd mesa
+          set +e
+          # No gallium and no vulkan means src/freedreno is never entered at all:
+          # the 198 targets of the previous attempt were all src/util/tests. So
+          # one driver has to be named for ir3 to exist.
+          meson setup build \
+            -Dbuild-tests=true \
+            -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dllvm=disabled \
+            > ../out/configure.log 2>&1
+          echo "CONFIGURE_EXIT=$?" >> ../out/configure.log
+          tail -40 ../out/configure.log
+
+      - name: Build and locate the executable
+        run: |
+          set +e            # Actions runs this step with -e; a grep that finds
+                            # nothing would otherwise kill the step silently.
+          mkdir -p out
+          echo "--- meson.build tail" > out/build.log
+          tail -14 mesa/src/freedreno/ir3/meson.build >> out/build.log
+          echo "--- build dir" >> out/build.log
+          ls -l mesa/build 2>&1 | head -8 >> out/build.log
+          echo "--- ninja, all default targets" >> out/build.log
+          ninja -C mesa/build >> out/build.log 2>&1
+          echo "ninja_exit=$?" >> out/build.log
+          tail -25 out/build.log
+          echo "--- where did it land" >> out/build.log
+          find mesa/build -name 'ir3_asm_dump*' -type f >> out/build.log 2>&1
+          find mesa/build -name '*ir3*' -type f -path '*tests*' >> out/build.log 2>&1
+          tail -12 out/build.log
+
+      - name: Assemble
+        run: |
+          set +e
+          mkdir -p out
+          TOOL="$(find mesa/build -name ir3_asm_dump -type f | head -1)"
+          echo "tool: ${TOOL:-none}" > out/asm.log
+          cp mesa/src/freedreno/computerator/examples/buf-init.asm out/ex1-buf-init.asm
+          printf '%s\n' "$SHADER" > out/ex2-store.asm
+          for f in out/ex1-buf-init.asm out/ex2-store.asm; do
+            b="$(basename "$f" .asm)"
+            echo "==== $f" >> out/asm.log
+            cat "$f" >> out/asm.log
+            if [ -n "$TOOL" ] && "$TOOL" "out/$b.bin" < "$f" >> "out/asm.log" 2>&1; then
+              echo "OK $b" >> out/asm.log
+              ls -l "out/$b.bin" >> out/asm.log
+              xxd "out/$b.bin" | head -24 >> out/asm.log
+            else
+              echo "FAILED $b" >> out/asm.log
+            fi
+          done
+          cat out/asm.log
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ir3-asm4
+          path: out/*
+          retention-days: 14
