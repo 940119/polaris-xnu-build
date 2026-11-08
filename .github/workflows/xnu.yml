@@ -43,7 +43,7 @@ jobs:
       # The patches live where they are written; this repository only builds.
       - name: Fetch patches
         run: |
-          git clone -q --depth 1 "$PATCH_REPO" src
+          git clone -q --depth 1 -b mi8gpu "$PATCH_REPO" src
           echo "patches: $(ls src/xnu/patches/*.patch | wc -l | tr -d ' ') files, last:"
           ls src/xnu/patches | tail -3
           shasum -a 256 src/xnu/patches/0117-*.patch src/xnu/patches/0118-*.patch 2>/dev/null || true
