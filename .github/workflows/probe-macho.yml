@@ -1,0 +1,57 @@
+name: probe-macho
+
+# Answers two questions without touching the phone:
+#   1. can the runner's clang produce a USERLAND arm64 Mach-O (not a kext)?
+#   2. does that Mach-O carry the LC_BUILD_VERSION / LC_LOAD_DYLINKER an iOS
+#      launchd would need before it will exec it?
+# Both are printed into the log, so the answer survives even if the artifact
+# is not downloaded. Nothing here writes to the device.
+on:
+  workflow_dispatch:
+
+jobs:
+  macho:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Toolchain
+        run: |
+          xcrun --find clang
+          xcrun clang --version
+          echo "--- iphoneos sdk ---"
+          xcrun --sdk iphoneos --show-sdk-path || echo "(no iphoneos sdk)"
+          echo "--- macosx sdk ---"
+          xcrun --sdk macosx --show-sdk-path
+
+      - name: Build a minimal Mach-O
+        run: |
+          cat > /tmp/p.c <<'CEOF'
+          int _start(void) { return 0; }
+          CEOF
+          echo "=== attempt 1: -target arm64-apple-ios11.0 -nostdlib -static ==="
+          xcrun clang -target arm64-apple-ios11.0 -nostdlib -static \
+              -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.c && echo "OK attempt 1" || {
+            echo "=== attempt 2: -arch arm64 ==="
+            xcrun clang -arch arm64 -nostdlib -static \
+                -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.c && echo "OK attempt 2"
+          }
+          echo "=== file ==="
+          file /tmp/mi8gpu_probe || true
+          echo "=== lipo -info ==="
+          lipo -info /tmp/mi8gpu_probe || true
+          echo "=== otool -h ==="
+          otool -h /tmp/mi8gpu_probe || true
+          echo "=== load commands (first 80 lines) ==="
+          otool -l /tmp/mi8gpu_probe | head -80 || true
+          echo "=== size ==="
+          ls -l /tmp/mi8gpu_probe || true
+          echo "=== xxd head (first 32 bytes) ==="
+          xxd -l 32 /tmp/mi8gpu_probe || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-macho
+          path: /tmp/mi8gpu_probe
+          if-no-files-found: warn
