@@ -51,13 +51,21 @@ jobs:
           xcrun --sdk macosx --show-sdk-path
       - name: Build a minimal Mach-O
         run: |
-          printf 'int _start(void) { return 0; }\n' > /tmp/p.c
+          cat > /tmp/p.s <<'ASM'
+          .globl _start
+          .p2align 2
+          _start:
+              mov  x0, #0
+              mov  x16, #1        /* exit */
+              svc  #0x80
+          ASM
+          echo "--- entry asm ---"; cat /tmp/p.s
           echo "=== attempt 1: -target arm64-apple-ios11.0 -nostdlib -static ==="
-          if xcrun clang -target arm64-apple-ios11.0 -nostdlib -static -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.c; then
+          if xcrun clang -target arm64-apple-ios11.0 -nostdlib -static -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.s; then
             echo "OK attempt 1"
           else
             echo "=== attempt 2: -arch arm64 ==="
-            xcrun clang -arch arm64 -nostdlib -static -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.c && echo "OK attempt 2"
+            xcrun clang -arch arm64 -nostdlib -static -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.s && echo "OK attempt 2"
           fi
           echo "=== file ==="; file /tmp/mi8gpu_probe || true
           echo "=== lipo -info ==="; lipo -info /tmp/mi8gpu_probe || true
