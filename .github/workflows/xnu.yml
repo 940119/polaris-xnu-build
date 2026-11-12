@@ -140,7 +140,22 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        # The job log is truncated by GitHub around 5 MB, and xnu's build is
+        # far noisier than that -- the compiler error was simply not in the
+        # copy that gets downloaded. Keep the whole thing in build.log, print
+        # only the tail on failure, and upload the file below.
+        run: |
+          set +e
+          bash build.sh > build.log 2>&1
+          rc=$?
+          echo "=== build.sh exit $rc ==="
+          if [ $rc -ne 0 ]; then
+            echo "=== last 200 lines ==="
+            tail -200 build.log
+          else
+            tail -20 build.log
+          fi
+          exit $rc
 
       - name: Package build tree for local compiles
         if: always()
@@ -176,6 +191,14 @@ jobs:
             lipo -info "$lib" >> out/kdk-libs/arch.txt 2>&1 || true
           done
           ls -la out/kdk-libs
+
+      - name: Upload build.log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: dxb/build.log
+          if-no-files-found: warn
 
       - name: Collect
         if: always()
