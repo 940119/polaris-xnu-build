@@ -19,6 +19,9 @@ on:
         description: runner label; macos-14 is being retired on 2026-11-02
           and fails during its brownout windows (UTC 14:00-24:00)
         default: macos-15
+      macho_probe:
+        description: also compile a minimal userland arm64 Mach-O and print its load commands (5-c2 gate)
+        default: "false"
 
 env:
   PATCH_REPO: https://github.com/940119/ios16_on_polaris_mix2s
@@ -29,6 +32,47 @@ env:
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
 
 jobs:
+  # 5-c2 gate: can this runner's clang produce a USERLAND arm64 Mach-O, and
+  # does it carry the load commands an iOS launchd would need? Everything is
+  # printed into the log, so the answer survives without the artifact.
+  # Guarded by an input: the normal kernel build path is untouched.
+  macho:
+    if: ${{ inputs.macho_probe == 'true' }}
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 15
+    steps:
+      - name: Toolchain
+        run: |
+          xcrun --find clang
+          xcrun clang --version
+          echo "--- iphoneos sdk ---"
+          xcrun --sdk iphoneos --show-sdk-path || echo "(no iphoneos sdk)"
+          echo "--- macosx sdk ---"
+          xcrun --sdk macosx --show-sdk-path
+      - name: Build a minimal Mach-O
+        run: |
+          printf 'int _start(void) { return 0; }\n' > /tmp/p.c
+          echo "=== attempt 1: -target arm64-apple-ios11.0 -nostdlib -static ==="
+          if xcrun clang -target arm64-apple-ios11.0 -nostdlib -static -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.c; then
+            echo "OK attempt 1"
+          else
+            echo "=== attempt 2: -arch arm64 ==="
+            xcrun clang -arch arm64 -nostdlib -static -Wl,-e,_start -o /tmp/mi8gpu_probe /tmp/p.c && echo "OK attempt 2"
+          fi
+          echo "=== file ==="; file /tmp/mi8gpu_probe || true
+          echo "=== lipo -info ==="; lipo -info /tmp/mi8gpu_probe || true
+          echo "=== otool -h ==="; otool -h /tmp/mi8gpu_probe || true
+          echo "=== load commands ==="; otool -l /tmp/mi8gpu_probe | head -90 || true
+          echo "=== size ==="; ls -l /tmp/mi8gpu_probe || true
+          echo "=== xxd head ==="; xxd -l 32 /tmp/mi8gpu_probe || true
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-macho
+          path: /tmp/mi8gpu_probe
+          if-no-files-found: warn
+
   build:
     # macos-14 is retired on 2026-11-02 and is browned out every day from
     # 14:00 to 24:00 UTC until then, so the default is macos-15. That image
