@@ -76,6 +76,13 @@ jobs:
           echo "=== otool -h ==="; otool -h /tmp/probe || true
           echo "=== load commands ==="; otool -l /tmp/probe | grep -E "cmd |platform|minos|sdk |name |entryoff|segname|fileoff" | head -40 || true
           echo "=== size ==="; ls -l /tmp/probe || true
+      - name: Upload the probe binary
+        if: ${{ inputs.macho_probe == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-macho
+          path: /tmp/probe
+          if-no-files-found: warn
       - name: Stop after the probe
         if: ${{ inputs.macho_probe == 'true' }}
         run: |
