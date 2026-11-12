@@ -59,12 +59,17 @@ jobs:
               mov  x16, #1
               svc  #0x80
           ASM
-          echo "=== attempt 1: -target arm64-apple-ios11.0 ==="
-          if xcrun clang -target arm64-apple-ios11.0 -nostdlib -static -Wl,-e,_start -o /tmp/probe /tmp/p.s; then
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "=== attempt 1: dynamic, -lSystem, platform_version ==="
+          if xcrun clang -target arm64-apple-ios11.0 -isysroot "$SDK" \
+               -Wl,-platform_version,ios,11.0,18.5 \
+               -Wl,-e,_start -o /tmp/probe /tmp/p.s -lSystem; then
             echo "OK attempt 1"
           else
-            echo "=== attempt 2: -arch arm64 ==="
-            xcrun clang -arch arm64 -nostdlib -static -Wl,-e,_start -o /tmp/probe /tmp/p.s && echo "OK attempt 2"
+            echo "=== attempt 2: dynamic, no -e (LC_MAIN from crt) ==="
+            xcrun clang -target arm64-apple-ios11.0 -isysroot "$SDK" \
+                 -Wl,-platform_version,ios,11.0,18.5 \
+                 -o /tmp/probe2 /tmp/p.s -lSystem && cp /tmp/probe2 /tmp/probe && echo "OK attempt 2"
           fi
           echo "=== file ==="; file /tmp/probe || true
           echo "=== lipo ==="; lipo -info /tmp/probe || true
